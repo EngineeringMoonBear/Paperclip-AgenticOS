@@ -357,6 +357,18 @@ export {
 } from "./execution-workspace.js";
 
 export {
+  resolvedWorkspaceResourceSchema,
+  workspaceFileContentSchema,
+  workspaceFilePreviewKindSchema,
+  workspaceFileRefSchema,
+  workspaceFileResourceKindSchema,
+  workspaceFileResourceQuerySchema,
+  workspaceFileSelectorSchema,
+  workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileResourceQuery,
+} from "./workspace-file-resource.js";
+
+export {
   createGoalSchema,
   updateGoalSchema,
   type CreateGoal,
