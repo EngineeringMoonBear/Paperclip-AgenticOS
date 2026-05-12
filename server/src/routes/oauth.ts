@@ -118,6 +118,11 @@ function ensureCompanyAdmin(req: Request, res: Response): boolean {
   return true;
 }
 
+function isCompanyAdmin(req: Request, companyId: string): boolean {
+  const membership = actorMembership(req, companyId);
+  return ADMIN_ROLES.has(String(membership?.membershipRole ?? ""));
+}
+
 export function oauthRoutes(deps: OAuthRouteDeps): Router {
   const r = Router({ mergeParams: true });
 
@@ -215,10 +220,15 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
   r.get("/connections", async (req, res) => {
     if (!ensureMember(req, res)) return;
     const companyId = (req.params as unknown as { companyId: string }).companyId;
+    const includeDiagnostics = isCompanyAdmin(req, companyId);
     const rows = await deps.db.query.oauthConnections.findMany({
       where: eq(oauthConnections.companyId, companyId),
     });
-    res.json({ connections: (rows as unknown[]).map((c) => publicConnection(c)) });
+    res.json({
+      connections: (rows as unknown[]).map((c) =>
+        publicConnection(c, includeDiagnostics),
+      ),
+    });
   });
 
   r.get("/connections/:id", async (req, res) => {
@@ -234,7 +244,7 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
       res.status(404).end();
       return;
     }
-    res.json(publicConnection(row));
+    res.json(publicConnection(row, isCompanyAdmin(req, companyId)));
   });
 
   r.post("/connections/:id/refresh", async (req, res) => {
@@ -426,7 +436,7 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
   return r;
 }
 
-function publicConnection(c: unknown) {
+function publicConnection(c: unknown, includeDiagnostics = false) {
   const row = c as {
     id: string;
     providerId: string;
@@ -451,8 +461,12 @@ function publicConnection(c: unknown) {
     scopes: row.scopes,
     accessTokenExpiresAt: row.accessTokenExpiresAt,
     lastRefreshedAt: row.lastRefreshedAt,
-    lastError: row.lastError,
-    lastErrorAt: row.lastErrorAt,
+    ...(includeDiagnostics
+      ? {
+          lastError: row.lastError,
+          lastErrorAt: row.lastErrorAt,
+        }
+      : {}),
     refreshAttemptCount: row.refreshAttemptCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

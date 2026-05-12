@@ -105,6 +105,7 @@ describe("refreshConnection", () => {
     expect(result.outcome).toBe("success");
     if (result.outcome === "success") {
       expect(result.accessToken).toBe("NEW_ACCESS");
+      expect(result.accessTokenSecretId).toBe("new-access");
     }
     expect(upsertSecretByName).toHaveBeenCalledWith(
       "c1",

@@ -16,14 +16,14 @@ const conn = {
   refreshTokenSecretId: null,
   accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
   lastRefreshedAt: new Date(),
-  lastError: null,
-  lastErrorAt: null,
+  lastError: "invalid_grant: account user@example.com",
+  lastErrorAt: new Date(),
   refreshAttemptCount: 0,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
 
-function makeApp(rows: Array<typeof conn>) {
+function makeApp(rows: Array<typeof conn>, membershipRole = "admin") {
   const env = { GH_ID: "id", GH_SECRET: "s" };
   const registry = new ProviderRegistry({ env });
   registry.register(
@@ -61,7 +61,7 @@ function makeApp(rows: Array<typeof conn>) {
       (req as unknown as { actor: unknown }).actor = {
         type: "board",
         userId: "u1",
-        memberships: [{ companyId: req.params.companyId, membershipRole: "admin" }],
+        memberships: [{ companyId: req.params.companyId, membershipRole }],
       };
       next();
     },
@@ -83,6 +83,21 @@ describe("Connection management routes", () => {
     expect(res.body.connections).toHaveLength(1);
     expect(JSON.stringify(res.body)).not.toContain("accessTokenSecretId");
     expect(JSON.stringify(res.body)).not.toContain("refreshTokenSecretId");
+  });
+
+  it("GET /connections hides provider error diagnostics from non-admin members", async () => {
+    const res = await request(makeApp([conn], "member")).get(
+      "/api/companies/c1/oauth/connections",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.connections[0]).not.toHaveProperty("lastError");
+    expect(res.body.connections[0]).not.toHaveProperty("lastErrorAt");
+  });
+
+  it("GET /connections includes provider error diagnostics for admins", async () => {
+    const res = await request(makeApp([conn])).get("/api/companies/c1/oauth/connections");
+    expect(res.status).toBe(200);
+    expect(res.body.connections[0].lastError).toBe(conn.lastError);
   });
 
   it("GET /connections/:id returns 404 for missing", async () => {

@@ -208,6 +208,24 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
       );
     }
 
+    const existingBeforeSecretWrite =
+      await deps.db.query.oauthConnections.findFirst({
+        where: and(
+          eq(oauthConnections.companyId, stateRow.companyId),
+          eq(oauthConnections.providerId, providerId),
+        ),
+      });
+    if (
+      existingBeforeSecretWrite &&
+      existingBeforeSecretWrite.accountId &&
+      parsedAccount.accountId !== existingBeforeSecretWrite.accountId
+    ) {
+      return res.redirect(
+        302,
+        back(deps, stateRow.returnUrl, { oauth_error: "account_mismatch" }),
+      );
+    }
+
     // Persist secrets via upsert (deterministic name → idempotent reconnects).
     const accessName = secretName(providerId, parsedAccount.accountId, "access");
     const accessSecret = await deps.secretService.upsertSecretByName(
@@ -232,23 +250,38 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
       : null;
     const finalScopes = parsedToken.scope ?? stateRow.scopesRequested ?? [];
 
-    // Track the secret IDs we just wrote so that, on ACCOUNT_MISMATCH, we
-    // can roll them back. Without this, a mismatched callback leaves
-    // orphaned encrypted access/refresh tokens that no connection row
-    // references — names matching `oauth:<provider>:<accountId>:access` /
-    // `:refresh`. The connection upsert runs in its own transaction below;
-    // those secret writes are NOT inside that transaction (they require
-    // their own DB writes for versions/encryption metadata via the
-    // secret-service factory bound to the outer db), so a transactional
-    // rollback alone cannot undo them.
-    //
-    // We use Option C from the design notes: connection writes stay in a
-    // single transaction; on rollback we explicitly `secretService.remove`
-    // any freshly-persisted secrets. Option B (passing `tx` through the
-    // secret service) is the cleaner long-term fix but requires a wider
-    // refactor of the secret-service factory.
+    // Track the secret IDs we just wrote. The connection upsert runs in its own
+    // transaction below, but these secret writes are outside that transaction,
+    // so a failed connection write cannot roll them back automatically. Only
+    // remove IDs that did not already back the pre-existing connection; on a
+    // reconnect, upsertSecretByName rotates the same secret ID in place and
+    // deleting it would break the still-current connection.
     const newSecretIds: string[] = [accessSecret.id];
     if (refreshSecret) newSecretIds.push(refreshSecret.id);
+    const reusableSecretIds = new Set(
+      [
+        existingBeforeSecretWrite?.accessTokenSecretId,
+        existingBeforeSecretWrite?.refreshTokenSecretId,
+      ].filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+
+    const rollbackNewSecrets = async (reason: string): Promise<void> => {
+      if (typeof deps.secretService.remove !== "function") return;
+      for (const secretId of newSecretIds) {
+        if (reusableSecretIds.has(secretId)) continue;
+        await deps.secretService.remove(secretId).catch((removeErr) => {
+          oauthLogger.warn(
+            {
+              provider: providerId,
+              secretId,
+              reason,
+              err: { message: (removeErr as Error).message },
+            },
+            "failed to roll back orphan OAuth secret after callback failure",
+          );
+        });
+      }
+    };
 
     try {
       await deps.db.transaction(async (tx: any) => {
@@ -303,29 +336,13 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
       });
     } catch (err) {
       if ((err as Error).message === "ACCOUNT_MISMATCH") {
-        // Roll back the secret writes that landed before mismatch was
-        // detected. `remove` is idempotent and best-effort — swallow
-        // failures so a secrets cleanup hiccup doesn't override the
-        // user-visible mismatch error redirect.
-        if (typeof deps.secretService.remove === "function") {
-          for (const secretId of newSecretIds) {
-            await deps.secretService.remove(secretId).catch((removeErr) => {
-              oauthLogger.warn(
-                {
-                  provider: providerId,
-                  secretId,
-                  err: { message: (removeErr as Error).message },
-                },
-                "failed to roll back orphan OAuth secret after account mismatch",
-              );
-            });
-          }
-        }
+        await rollbackNewSecrets("account_mismatch");
         return res.redirect(
           302,
           back(deps, stateRow.returnUrl, { oauth_error: "account_mismatch" }),
         );
       }
+      await rollbackNewSecrets("connection_transaction_failed");
       throw err;
     }
 

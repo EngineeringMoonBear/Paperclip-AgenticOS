@@ -2338,6 +2338,7 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
           }
 
           let resolvedAccessToken: string | null = null;
+          let resolvedAccessTokenSecretId = conn.accessTokenSecretId;
           if (needsRefresh) {
             if (!oauthDeps.refreshFn) {
               const e = new Error(
@@ -2354,6 +2355,8 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
             });
             if (refreshResult.outcome === "success") {
               resolvedAccessToken = refreshResult.accessToken;
+              resolvedAccessTokenSecretId =
+                refreshResult.accessTokenSecretId ?? conn.accessTokenSecretId;
             } else if (refreshResult.outcome === "revoked") {
               const e = new Error(
                 `oauth_connection_revoked: ${conn.providerId}`,
@@ -2378,7 +2381,7 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
             manifestEntry = {
               configPath: `env.${key}`,
               envKey: key,
-              secretId: conn.accessTokenSecretId,
+              secretId: resolvedAccessTokenSecretId,
               secretKey: `oauth:${conn.providerId}:access`,
               version: 0,
               provider: "local_encrypted",

@@ -30,7 +30,7 @@ export interface RefreshDeps {
 }
 
 export type RefreshResult =
-  | { outcome: "success"; accessToken: string }
+  | { outcome: "success"; accessToken: string; accessTokenSecretId?: string }
   | { outcome: "revoked" }
   | { outcome: "transient"; error: string }
   | { outcome: "skipped"; reason: string };
@@ -273,6 +273,7 @@ export async function refreshConnection(deps: RefreshDeps): Promise<RefreshResul
     return {
       outcome: "success",
       accessToken: parsed.accessToken,
+      accessTokenSecretId: access.id,
     } as const;
   });
 }
