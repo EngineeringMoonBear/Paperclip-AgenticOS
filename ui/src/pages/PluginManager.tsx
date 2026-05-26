@@ -43,6 +43,33 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
   return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
 }
 
+const EXPERIMENTAL_PLUGIN_PACKAGE_NAMES = new Set([
+  "@paperclipai/plugin-llm-wiki",
+  "@paperclipai/plugin-workspace-diff",
+]);
+const EXPERIMENTAL_PLUGIN_KEYS = new Set([
+  "paperclip.workspace-diff",
+  "paperclipai.plugin-llm-wiki",
+]);
+
+function isExperimentalPluginIdentity(input: {
+  packageName?: string | null;
+  packagePath?: string | null;
+  pluginKey?: string | null;
+  manifestJson?: PluginRecord["manifestJson"] | null;
+  bundledExperimental?: boolean;
+}) {
+  if (input.bundledExperimental) return true;
+
+  const packageName = input.packageName ?? "";
+  const packagePath = input.packagePath ?? "";
+  const pluginKey = input.pluginKey ?? input.manifestJson?.id ?? "";
+  if (EXPERIMENTAL_PLUGIN_PACKAGE_NAMES.has(packageName)) return true;
+  if (EXPERIMENTAL_PLUGIN_KEYS.has(pluginKey)) return true;
+  if (packageName.includes("sandbox") || packagePath.includes("sandbox")) return true;
+  return input.manifestJson?.environmentDrivers?.some((driver) => driver.kind === "sandbox_provider") === true;
+}
+
 function ExperimentalBadge() {
   return (
     <Badge
@@ -260,7 +287,12 @@ export function PluginManager() {
                         <Badge variant="outline">
                           {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
                         </Badge>
-                        {bundledPlugin.experimental && <ExperimentalBadge />}
+                        {isExperimentalPluginIdentity({
+                          packageName: bundledPlugin.packageName,
+                          packagePath: bundledPlugin.localPath,
+                          pluginKey: bundledPlugin.pluginKey,
+                          bundledExperimental: bundledPlugin.experimental,
+                        }) && <ExperimentalBadge />}
                         {installedPlugin ? (
                           <Badge
                             variant={installedPlugin.status === "ready" ? "default" : "secondary"}
@@ -354,7 +386,13 @@ export function PluginManager() {
                             : "Example"}
                         </Badge>
                       )}
-                      {bundledByPackageName.get(plugin.packageName)?.experimental && <ExperimentalBadge />}
+                      {isExperimentalPluginIdentity({
+                        packageName: plugin.packageName,
+                        packagePath: plugin.packagePath,
+                        pluginKey: plugin.pluginKey,
+                        manifestJson: plugin.manifestJson,
+                        bundledExperimental: bundledByPackageName.get(plugin.packageName)?.experimental,
+                      }) && <ExperimentalBadge />}
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
