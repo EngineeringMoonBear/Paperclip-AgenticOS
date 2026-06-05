@@ -67,7 +67,7 @@
   {
     "dir": "packages/teams-catalog",
     "name": "@paperclipai/teams-catalog",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/db",
