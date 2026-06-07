@@ -224,6 +224,26 @@ describe("DocumentReviewRail", () => {
     expect(container.textContent).toContain("added text");
   });
 
+  it("wires Resolve onto anchored (non-orphan) suggestion cards", async () => {
+    // Regression: onResolveSuggestion was only wired on the orphaned-suggestion
+    // branch, so Resolve never appeared on healthy/anchored cards where it's
+    // most useful. Assert the non-orphan render path exposes it.
+    await act(() =>
+      root.render(
+        <DocumentReviewRail
+          reviewIndex={makeIndex()}
+          canReview
+          canFinishReview
+          latestRevisionId="rev-1"
+          initialTab="suggestions"
+          onResolveSuggestion={vi.fn()}
+          {...baseHandlers}
+        />,
+      ),
+    );
+    expect(container.querySelector('[data-testid="suggestion-resolve-sug-1"]')).not.toBeNull();
+  });
+
   it("pins orphaned anchors into a collapsible group when the orphan filter is on", async () => {
     const index = makeIndex({
       annotationThreads: [

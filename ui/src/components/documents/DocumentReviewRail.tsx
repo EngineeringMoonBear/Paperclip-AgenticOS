@@ -15,7 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+import { cn, isApplePlatform } from "@/lib/utils";
 import type { ReviewAuthorMaps } from "@/lib/document-review-authors";
 import { DocumentThreadCard, type RailThread } from "./DocumentThreadCard";
 import { SuggestionCard } from "./SuggestionCard";
@@ -371,6 +371,7 @@ function ReviewRailBody({
                       authorMaps={authorMaps}
                       onAccept={onAcceptSuggestion}
                       onReject={onRejectSuggestion}
+                      onResolve={onResolveSuggestion}
                       onReply={onReplySuggestion}
                       onViewDiff={onViewSuggestionDiff}
                     />
@@ -447,10 +448,12 @@ function OrphanGroup({ count, children }: { count: number; children: React.React
 }
 
 function RailEmpty({ message }: { message: string }) {
+  // Platform-aware hint: macOS/iOS reviewers see ⌘⇧M, Windows/Linux see Ctrl+Shift+M.
+  const hotkey = isApplePlatform() ? "⌘⇧M" : "Ctrl+Shift+M";
   return (
     <div className="px-2 py-8 text-center text-xs text-muted-foreground" data-testid="rail-empty">
       <p>{message}</p>
-      <p className="mt-1 text-[11px] opacity-70">⌘⇧M to comment from a selection</p>
+      <p className="mt-1 text-[11px] opacity-70">{hotkey} to comment from a selection</p>
     </div>
   );
 }
