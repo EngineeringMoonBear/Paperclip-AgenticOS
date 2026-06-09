@@ -781,9 +781,9 @@ export function RoutineDetail() {
         Skip to section
       </a>
 
-      <div className="-m-6 flex min-h-[calc(100vh-3.5rem)] flex-col">
+      <div className="-m-4 flex min-h-full flex-col md:-m-6">
         {/* Slim page header */}
-        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
+        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <textarea
               ref={titleInputRef}
@@ -848,7 +848,7 @@ export function RoutineDetail() {
           <main
             id="routine-section"
             role="main"
-            className="min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-8"
+            className="min-w-0 flex-1 px-4 py-6 md:px-8"
           >
             <section
               aria-labelledby="routine-section-title"
