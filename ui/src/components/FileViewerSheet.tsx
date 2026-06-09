@@ -101,6 +101,27 @@ function middleTruncatePath(path: string, maxLen = 80): string {
   return `${head}…${tail}`;
 }
 
+async function copyTextWithFallback(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 export function describeDenial(code: string, fallback: string): { title: string; body: string; icon: ReactNode } {
   const lower = code.toLowerCase();
   if (lower.includes("policy") || lower.includes("denied") || lower.includes("sensitive")) {
@@ -405,8 +426,11 @@ export function FileViewerSheet({
     typeof openProp === "boolean" ? openProp : state !== null || showPromptWhenEmpty || viewer.browse;
 
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [copiedField, setCopiedField] = useState<"path" | "link" | null>(null);
+  const [copiedField, setCopiedField] = useState<"content" | "link" | null>(null);
+  const [copyingField, setCopyingField] = useState<"content" | "link" | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState("");
   const [announcement, setAnnouncement] = useState<string>("");
+  const copyFeedbackTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!state) {
@@ -459,6 +483,10 @@ export function FileViewerSheet({
     }
   }, [contentQuery.isError, contentQuery.error]);
 
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current) window.clearTimeout(copyFeedbackTimerRef.current);
+  }, []);
+
   const handleOpenChange = useCallback(
     (next: boolean) => {
       if (onOpenChange) {
@@ -494,23 +522,50 @@ export function FileViewerSheet({
     [viewer],
   );
 
-  const copyToClipboard = useCallback(async (value: string, field: "path" | "link") => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(field);
-      window.setTimeout(() => setCopiedField((current) => (current === field ? null : current)), 1500);
-    } catch {
-      setAnnouncement("Unable to copy to clipboard.");
-    }
+  const showCopyFeedback = useCallback((field: "content" | "link" | null, message: string) => {
+    setCopiedField(field);
+    setCopyFeedback(message);
+    setAnnouncement(message);
+    if (copyFeedbackTimerRef.current) window.clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopiedField((current) => (current === field ? null : current));
+      setCopyFeedback("");
+      copyFeedbackTimerRef.current = null;
+    }, 1800);
   }, []);
 
-  const handleCopyPath = useCallback(() => {
-    if (state) void copyToClipboard(state.path, "path");
-  }, [copyToClipboard, state]);
+  const copyToClipboard = useCallback(async (value: string, field: "content" | "link", message: string) => {
+    try {
+      setCopyingField(field);
+      await copyTextWithFallback(value);
+      showCopyFeedback(field, message);
+    } catch {
+      showCopyFeedback(null, "Copy failed");
+    } finally {
+      setCopyingField((current) => (current === field ? null : current));
+    }
+  }, [showCopyFeedback]);
+
+  const handleCopyContent = useCallback(() => {
+    if (!state) return;
+    void (async () => {
+      let content = contentQuery.data;
+      if (!content && canPreview) {
+        const result = await contentQuery.refetch();
+        content = result.data;
+      }
+      if (!content) {
+        showCopyFeedback(null, "File contents unavailable");
+        return;
+      }
+      const message = content.content.encoding === "base64" ? "Copied file data" : "Copied contents";
+      await copyToClipboard(content.content.data, "content", message);
+    })();
+  }, [canPreview, contentQuery, copyToClipboard, showCopyFeedback, state]);
 
   const handleCopyLink = useCallback(() => {
     if (typeof window === "undefined") return;
-    void copyToClipboard(window.location.href, "link");
+    void copyToClipboard(window.location.href, "link", "Copied link");
   }, [copyToClipboard]);
 
   const handleRetry = useCallback(() => {
@@ -562,6 +617,9 @@ export function FileViewerSheet({
               </DialogDescription>
             </div>
             <div className="flex shrink-0 items-center gap-1 self-start">
+              <span className="hidden min-w-28 text-right text-xs text-muted-foreground sm:inline" role="status" aria-live="polite">
+                {copyFeedback}
+              </span>
               {cameFromBrowse ? (
                 <Button
                   type="button"
@@ -580,12 +638,18 @@ export function FileViewerSheet({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  onClick={handleCopyPath}
-                  aria-label="Copy path"
-                  title="Copy path"
+                  onClick={handleCopyContent}
+                  aria-label={copiedField === "content" ? "Copied file contents" : "Copy file contents"}
+                  title={copiedField === "content" ? "Copied contents" : "Copy file contents"}
                   className="h-7 w-7"
                 >
-                  {copiedField === "path" ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                  {copyingField === "content" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : copiedField === "content" ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
                 </Button>
               ) : null}
               {state ? (
@@ -594,11 +658,17 @@ export function FileViewerSheet({
                   variant="ghost"
                   size="icon-sm"
                   onClick={handleCopyLink}
-                  aria-label="Copy link to this file view"
-                  title="Copy link"
+                  aria-label={copiedField === "link" ? "Copied file view link" : "Copy link to this file view"}
+                  title={copiedField === "link" ? "Copied link" : "Copy link"}
                   className="h-7 w-7"
                 >
-                  {copiedField === "link" ? <Check className="h-4 w-4 text-green-500" /> : <Link2 className="h-4 w-4" />}
+                  {copyingField === "link" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : copiedField === "link" ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <Link2 className="h-4 w-4" />
+                  )}
                 </Button>
               ) : null}
               <Button
