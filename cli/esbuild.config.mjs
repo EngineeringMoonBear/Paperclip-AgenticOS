@@ -1,54 +1,32 @@
 /**
- * esbuild configuration for building the paperclipai CLI for npm.
+ * esbuild configuration for building the paperclipai CLI.
  *
- * Bundles all workspace packages (@paperclipai/*) into a single file.
- * External npm packages remain as regular dependencies.
+ * AgenticOS self-hosting note: this builds a *self-contained* CLI for the
+ * Docker image. It bundles the workspace packages (@paperclipai/* except
+ * `server`) AND third-party npm deps (zod, drizzle-orm, commander, …) into a
+ * single dist/index.js, so the CLI runs via `node dist/index.js` without
+ * relying on pnpm's non-flat node_modules symlinks — transitive deps like
+ * `zod` have no symlink at the CLI package level and otherwise fail at runtime
+ * with ERR_MODULE_NOT_FOUND.
+ *
+ * Only packages that cannot be bundled stay external:
+ *   - @paperclipai/server — resolved at runtime via dynamic import (+ own deps)
+ *   - embedded-postgres + its per-platform binaries — dynamic platform imports
+ *     (never invoked when DATABASE_URL is set; resolved from node_modules if so)
+ *   - native addons — resolved from node_modules at runtime if present
  */
 
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "..");
-
-// Workspace packages whose code should be bundled into the CLI.
-// Note: "server" is excluded — it's published separately and resolved at runtime.
-const workspacePaths = [
-  "cli",
-  "packages/db",
-  "packages/shared",
-  "packages/adapter-utils",
-  "packages/adapters/claude-local",
-  "packages/adapters/codex-local",
-  "packages/adapters/openclaw-gateway",
-];
-
-// Workspace packages that should NOT be bundled — they'll be published
-// to npm and resolved at runtime (e.g. @paperclipai/server uses dynamic import).
-const externalWorkspacePackages = new Set([
+const EXTERNAL = [
   "@paperclipai/server",
-]);
-
-// Collect all external (non-workspace) npm package names
-const externals = new Set();
-for (const p of workspacePaths) {
-  const pkg = JSON.parse(readFileSync(resolve(repoRoot, p, "package.json"), "utf8"));
-  for (const name of Object.keys(pkg.dependencies || {})) {
-    if (externalWorkspacePackages.has(name)) {
-      externals.add(name);
-    } else if (!name.startsWith("@paperclipai/")) {
-      externals.add(name);
-    }
-  }
-  for (const name of Object.keys(pkg.optionalDependencies || {})) {
-    externals.add(name);
-  }
-}
-// Also add all published workspace packages as external
-for (const name of externalWorkspacePackages) {
-  externals.add(name);
-}
+  "embedded-postgres",
+  "@embedded-postgres/*",
+  "better-sqlite3",
+  "pg-native",
+  "bufferutil",
+  "utf-8-validate",
+  "fsevents",
+  "cpu-features",
+];
 
 /** @type {import('esbuild').BuildOptions} */
 export default {
@@ -58,8 +36,11 @@ export default {
   target: "node20",
   format: "esm",
   outfile: "dist/index.js",
-  banner: { js: "#!/usr/bin/env node" },
-  external: [...externals].sort(),
+  // Shebang + createRequire shim so bundled CJS deps can call require() under ESM.
+  banner: {
+    js: "#!/usr/bin/env node\nimport{createRequire as ___createRequire}from'module';const require=___createRequire(import.meta.url);",
+  },
+  external: EXTERNAL,
   treeShaking: true,
   sourcemap: true,
 };
