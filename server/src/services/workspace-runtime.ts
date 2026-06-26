@@ -284,16 +284,44 @@ export async function ensureServerWorkspaceLinksCurrent(
   );
 }
 
+// Server-only secrets that must never reach a spawned runtime/adapter
+// subprocess. Agent subprocesses inherit this sanitized base env (see the
+// `{ ...sanitizeRuntimeServiceBaseEnv(process.env), ...adapterEnv, ... }`
+// construction below), so anything left here is readable by a prompt-injected
+// agent via `printenv`. These keys are consumed only by the server process,
+// never by an adapter CLI.
+//
+// AgenticOS deployment note: the dashboard/runtime share a single .env that the
+// paperclip-server container loads wholesale (env_file), so host secrets land in
+// process.env. Stripping them here keeps the blast radius of a compromised agent
+// to the per-agent secrets it is explicitly granted — not the host's.
+const RUNTIME_SERVICE_ENV_DENYLIST = new Set([
+  "DATABASE_URL",
+  "BETTER_AUTH_SECRET",
+  "AGENTICOS_DB_PASSWORD",
+  "SYNCTHING_API_KEY",
+  "npm_config_tailscale_auth",
+  "npm_config_authenticated_private",
+]);
+
+// Secret-shaped server-only vars no adapter subprocess needs. Intentionally
+// matches `_SECRET`/`_PASSWORD` only — NOT `_API_KEY`/`_TOKEN`: LLM adapters
+// (codex→OPENAI_API_KEY, deepseek→DEEPSEEK_API_KEY, claude→ANTHROPIC_API_KEY)
+// inherit their key from this base env today. To remove those too, grant them
+// as per-agent secrets (merged after this base env) instead of inheriting.
+const RUNTIME_SERVICE_ENV_DENY_PATTERN = /_(SECRET|PASSWORD)$/i;
+
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (
+      key.startsWith("PAPERCLIP_") ||
+      RUNTIME_SERVICE_ENV_DENYLIST.has(key) ||
+      RUNTIME_SERVICE_ENV_DENY_PATTERN.test(key)
+    ) {
       delete env[key];
     }
   }
-  delete env.DATABASE_URL;
-  delete env.npm_config_tailscale_auth;
-  delete env.npm_config_authenticated_private;
   return env;
 }
 

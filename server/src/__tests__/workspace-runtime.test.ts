@@ -207,6 +207,42 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
   });
+
+  it("strips server-only host secrets so agent subprocesses cannot read them", () => {
+    const sanitized = sanitizeRuntimeServiceBaseEnv({
+      PATH: process.env.PATH,
+      BETTER_AUTH_SECRET: "session-signing-secret",
+      AGENTICOS_DB_PASSWORD: "pg-password",
+      SYNCTHING_API_KEY: "syncthing-key",
+      SOME_OTHER_SECRET: "x",
+      SOME_OTHER_PASSWORD: "y",
+      TZ: "America/New_York",
+    });
+
+    expect(sanitized.BETTER_AUTH_SECRET).toBeUndefined();
+    expect(sanitized.AGENTICOS_DB_PASSWORD).toBeUndefined();
+    expect(sanitized.SYNCTHING_API_KEY).toBeUndefined();
+    // Pattern-stripped: anything ending in _SECRET / _PASSWORD.
+    expect(sanitized.SOME_OTHER_SECRET).toBeUndefined();
+    expect(sanitized.SOME_OTHER_PASSWORD).toBeUndefined();
+    // Non-secret vars survive.
+    expect(sanitized.TZ).toBe("America/New_York");
+  });
+
+  it("preserves LLM API keys so codex/deepseek/claude adapters still authenticate", () => {
+    // These are inherited by adapter subprocesses today; stripping them would
+    // break API-key-authenticated agents. Removing them is a separate, opt-in
+    // change (grant per-agent instead of inheriting).
+    const sanitized = sanitizeRuntimeServiceBaseEnv({
+      OPENAI_API_KEY: "sk-openai",
+      DEEPSEEK_API_KEY: "sk-deepseek",
+      ANTHROPIC_API_KEY: "sk-anthropic",
+    });
+
+    expect(sanitized.OPENAI_API_KEY).toBe("sk-openai");
+    expect(sanitized.DEEPSEEK_API_KEY).toBe("sk-deepseek");
+    expect(sanitized.ANTHROPIC_API_KEY).toBe("sk-anthropic");
+  });
 });
 
 describe("ensureServerWorkspaceLinksCurrent", () => {
