@@ -52,6 +52,11 @@ RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+# AgenticOS: build the paperclipai CLI into the image so self-hosted installs
+# can run local-path plugin management (`plugin install /path`) inside the
+# container. The CLI bundles its deps self-contained (see cli/esbuild.config.mjs).
+RUN pnpm --filter paperclipai build
+RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
