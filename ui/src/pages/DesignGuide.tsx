@@ -112,9 +112,11 @@ import {
   AvatarGroup,
   AvatarGroupCount,
 } from "@/components/ui/avatar";
-import { StatusBadge, AgentStatusBadge, AgentStatusCapsule } from "@/components/StatusBadge";
+import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
+import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
@@ -125,6 +127,8 @@ import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
+import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import {
   EnvInputsList,
   ExternalSourcesList,
@@ -257,6 +261,84 @@ function TeamCardShowcase() {
   );
 }
 
+// Reusable environment-variables editor: one shared grid, in-field source
+// switch, fuzzy secret picker, sensitive-value detection, inline health.
+const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
+  {
+    id: "dg-github",
+    companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "github_token",
+    name: "GITHUB_TOKEN",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 3,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-03-01T10:00:00.000Z"),
+    updatedAt: new Date("2026-03-01T10:00:00.000Z"),
+  },
+  {
+    id: "dg-db",
+    companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "db_connection",
+    name: "DB_CONNECTION",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 3,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-03-01T10:00:00.000Z"),
+    updatedAt: new Date("2026-03-01T10:00:00.000Z"),
+  },
+];
+
+function EnvironmentVariablesEditorShowcase() {
+  const [env, setEnv] = useState<Record<string, EnvBinding>>({
+    NODE_ENV: { type: "plain", value: "production" },
+    GH_TOKEN: { type: "secret_ref", secretId: "dg-github", version: "latest" },
+    DB_URL: { type: "secret_ref", secretId: "dg-db", version: 3 },
+    STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
+  });
+  return (
+    <div className="max-w-[640px] rounded-md border border-border p-4">
+      <EnvironmentVariablesEditor
+        value={env}
+        secrets={DESIGN_GUIDE_SECRETS}
+        onChange={(next) => setEnv(next ?? {})}
+        onCreateSecret={async (name) => ({
+          ...DESIGN_GUIDE_SECRETS[0]!,
+          id: `dg-${name}`,
+          key: name,
+          name: name.toUpperCase(),
+          latestVersion: 1,
+        })}
+      />
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Color swatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -335,7 +417,7 @@ export function DesignGuide() {
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -470,7 +552,7 @@ export function DesignGuide() {
 
         <SubSection title="With icons">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Task</Button>
+            <Button><Plus /> New Issue</Button>
             <Button variant="outline"><Upload /> Upload</Button>
             <Button variant="destructive"><Trash2 /> Delete</Button>
             <Button size="sm"><Plus /> Add</Button>
@@ -518,6 +600,16 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
+          <div className="flex items-center gap-2 flex-wrap">
+            {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
+              (s) => (
+                <IssueStatusBadge key={s} status={s} />
+              )
+            )}
+          </div>
+        </SubSection>
+
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
@@ -550,18 +642,14 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Agent status (capsule + chip)">
-          <p className="text-xs text-muted-foreground mb-3 max-w-prose">
-            The agents section uses a brand heartbeat capsule (8×16) plus a brand
-            <code className="mx-1">.task-chip</code>. Four states only: idle (gray),
-            running (blue, pulses), paused (amber), error (red, blinks). Motion
-            honors <code>prefers-reduced-motion</code>.
-          </p>
-          <div className="flex items-center gap-6 flex-wrap">
-            {(["idle", "running", "paused", "error"] as const).map((label) => (
+        <SubSection title="Agent status dots">
+          <div className="flex items-center gap-4 flex-wrap">
+            {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
-                <AgentStatusCapsule status={label} />
-                <AgentStatusBadge status={label} />
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className={`inline-flex h-full w-full rounded-full ${agentStatusDot[label] ?? agentStatusDotDefault}`} />
+                </span>
+                <span className="text-xs text-muted-foreground">{label}</span>
               </div>
             ))}
           </div>
@@ -594,6 +682,69 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  AGENT CAPSULE                                                */}
+      {/* ============================================================ */}
+      <Section title="Agent Capsule">
+        <p className="text-sm text-muted-foreground max-w-prose">
+          The brand &quot;capsule is the agent&quot; motif. A single agent reads as a tall
+          pill that moves through three states as it comes to life. The online fill uses
+          the live brand agent-gradient tokens (<code className="font-mono">--agent-Na</code> →{" "}
+          <code className="font-mono">--agent-Nb</code>); <code className="font-mono">prefers-reduced-motion</code>{" "}
+          skips the liquid rise and pulses and renders the final state.
+        </p>
+        <SubSection title="States">
+          <div className="flex items-end gap-10">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="slot" />
+              <span className="text-xs text-muted-foreground">slot</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="configured" />
+              <span className="text-xs text-muted-foreground">configured</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} />
+              <span className="text-xs text-muted-foreground">online</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} glow="blue" />
+              <span className="text-xs text-muted-foreground">online · blue glow</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Sizes">
+          <div className="flex items-end gap-8">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="sm" gradient={1} />
+              <span className="text-xs text-muted-foreground">sm</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="md" gradient={4} />
+              <span className="text-xs text-muted-foreground">md</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="lg" gradient={8} />
+              <span className="text-xs text-muted-foreground">lg</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size={{ width: 28, height: 96 }} gradient={6} />
+              <span className="text-xs text-muted-foreground">custom px</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Gradients">
+          <div className="flex items-end gap-3 flex-wrap">
+            {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
+              <div key={i} className="flex flex-col items-center gap-1.5">
+                <AgentCapsule state="online" size="sm" gradient={i + 1} />
+                <span className="text-[10px] font-mono text-muted-foreground">{i + 1}</span>
+              </div>
+            ))}
           </div>
         </SubSection>
       </Section>
@@ -727,11 +878,11 @@ export function DesignGuide() {
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
             >
-              Watch task
+              Watch issue
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
               <Trash2 className="h-4 w-4" />
-              Delete task
+              Delete issue
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -784,7 +935,7 @@ export function DesignGuide() {
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Task Properties</SheetTitle>
+              <SheetTitle>Issue Properties</SheetTitle>
               <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
@@ -836,7 +987,7 @@ export function DesignGuide() {
                 </CommandItem>
                 <CommandItem>
                   <CircleDot className="h-4 w-4" />
-                  Tasks
+                  Issues
                 </CommandItem>
               </CommandGroup>
               <CommandSeparator />
@@ -847,7 +998,7 @@ export function DesignGuide() {
                 </CommandItem>
                 <CommandItem>
                   <Plus className="h-4 w-4" />
-                  Create new task
+                  Create new issue
                 </CommandItem>
               </CommandGroup>
             </CommandList>
@@ -870,7 +1021,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Task List</BreadcrumbPage>
+              <BreadcrumbPage>Issue List</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -899,7 +1050,7 @@ export function DesignGuide() {
         <SubSection title="Metric Cards">
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
             <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Tasks" />
+            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
             <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
             <MetricCard icon={Zap} value="99.9%" label="Uptime" />
           </div>
@@ -967,8 +1118,8 @@ export function DesignGuide() {
             }
             identifier="PAP-001"
             title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
-            trailing={<StatusBadge status="in_progress" />}
+            subtitle="Responsible: Agent Alpha"
+            trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -981,7 +1132,7 @@ export function DesignGuide() {
             identifier="PAP-002"
             title="Set up CI/CD pipeline"
             subtitle="Completed 2 days ago"
-            trailing={<StatusBadge status="done" />}
+            trailing={<IssueStatusBadge status="done" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -993,7 +1144,7 @@ export function DesignGuide() {
             }
             identifier="PAP-003"
             title="Write API documentation"
-            trailing={<StatusBadge status="todo" />}
+            trailing={<IssueStatusBadge status="todo" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -1006,7 +1157,7 @@ export function DesignGuide() {
             identifier="PAP-004"
             title="Deploy to production"
             subtitle="Blocked by PAP-001"
-            trailing={<StatusBadge status="blocked" />}
+            trailing={<IssueStatusBadge status="blocked" />}
             selected
           />
         </div>
@@ -1273,7 +1424,7 @@ export function DesignGuide() {
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>
@@ -1298,7 +1449,7 @@ export function DesignGuide() {
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
-              Tasks
+              Issues
               <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
                 12
               </span>
@@ -1331,7 +1482,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Tasks pattern)">
+      <Section title="Grouped List (Issues pattern)">
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
@@ -1588,7 +1739,7 @@ export function DesignGuide() {
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
             ["Cmd+K / Ctrl+K", "Open Command Palette"],
-            ["C", "New Task (outside inputs)"],
+            ["C", "New Issue (outside inputs)"],
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
 
@@ -1604,7 +1755,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Task Output Surface">
+      <Section title="Issue Output Surface">
         <SubSection title="Multiple outputs (primary video + 'Also produced')">
           <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
         </SubSection>
@@ -1613,10 +1764,21 @@ export function DesignGuide() {
         </SubSection>
         <SubSection title="Empty state">
           <p className="text-xs text-muted-foreground">
-            When a task has produced no artifact work products, the Output section renders nothing
+            When an issue has produced no artifact work products, the Output section renders nothing
             at all (no placeholder card).
           </p>
         </SubSection>
+      </Section>
+
+      <Section title="Environment Variables Editor">
+        <p className="text-sm text-muted-foreground">
+          Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
+          in-field Text/Secret source switch, a fuzzy secret picker with a pinned “Create secret”
+          item, automatic sensitive-value detection, and inline secret-health warnings. See the
+          Storybook <span className="font-mono">Product/Environment Variables Editor</span> stories
+          for all 10 states.
+        </p>
+        <EnvironmentVariablesEditorShowcase />
       </Section>
     </div>
   );

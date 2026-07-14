@@ -17,6 +17,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
+  MessagesSquare,
+  GanttChartSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -24,6 +26,7 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
+import { SidebarStarredProjects } from "./SidebarStarredProjects";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -56,11 +59,17 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  // IA flag (PAP-89): branch the sidebar nav presentation. Default OFF = classic
-  // (per-project collapsible, no Projects nav link). ON = streamlined
-  // (top-level Projects link). Issue/Task wording is split to PR #7651.
-  // Gating is navigation-only; all routes stay registered in both modes.
-  const streamlined = experimentalSettings?.enableStreamlinedLeftNavigation === true;
+  const showPipelines = experimentalSettings?.enablePipelines === true;
+  // Streamlined left navigation (top-level Projects link + starred children) is
+  // now the standard product sidebar (PAP-12472). The former experimental
+  // opt-out was retired; classic per-project collapsible mode is no longer
+  // user-selectable. Kept as a constant so the classic branch below stays as a
+  // documented reference until it is fully removed. Routes are unaffected.
+  const streamlined = true;
+  // Conference Room Chat flag (PAP-136/PAP-137): the Conference Room nav item
+  // is a new surface, hidden entirely while the flag is off (same no-flash
+  // pattern as showWorkspacesLink above).
+  const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -161,18 +170,28 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          {conferenceRoomChatEnabled ? (
+            <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+          ) : null}
         </div>
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          {showPipelines ? (
+            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+          ) : null}
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
           {streamlined ? (
-            <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+            <>
+              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarStarredProjects />
+            </>
           ) : null}
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
@@ -196,7 +215,7 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />

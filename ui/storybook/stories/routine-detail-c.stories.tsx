@@ -1,7 +1,10 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
 import type {
+  DocumentAnnotationThreadWithComments,
+  RoutineDescriptionDocument,
   RoutineDetail as RoutineDetailType,
   RoutineTrigger,
   RoutineVariable,
@@ -29,6 +32,7 @@ import {
   RunsSection,
   ActivitySection,
 } from "@/components/routine-sections/operate-sections";
+import { queryKeys } from "@/lib/queryKeys";
 import { storybookAgents, storybookProjects } from "../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
@@ -74,6 +78,7 @@ const routine: RoutineDetailType = {
   projectId: storybookProjects[0]?.id ?? null,
   goalId: null,
   parentIssueId: null,
+  responsibleUserId: null,
   title: "Send the weekly digest to {{customer_name}}",
   description:
     "Compile last week's shipped work and email a digest to {{customer_name}} by {{deadline}}.\n\nKeep it to five bullets.",
@@ -83,7 +88,7 @@ const routine: RoutineDetailType = {
   concurrencyPolicy: "coalesce_if_active",
   catchUpPolicy: "skip_missed",
   variables,
-  env: { DATABASE_URL: { kind: "secret", secretId: "secret-prod-db", version: "latest" } } as never,
+  env: { DATABASE_URL: { type: "secret_ref", secretId: "secret-prod-db", version: "latest" } } as never,
   latestRevisionId: "rev-17",
   latestRevisionNumber: 17,
   createdByAgentId: null,
@@ -103,10 +108,118 @@ const routine: RoutineDetailType = {
   activeIssue: null,
 };
 
+const routineDescriptionDocument: RoutineDescriptionDocument = {
+  id: "routine-description-doc",
+  companyId: COMPANY_ID,
+  routineId: ROUTINE_ID,
+  key: "description",
+  title: "Description",
+  format: "markdown",
+  body: routine.description ?? "",
+  latestRevisionId: "routine-description-rev-17",
+  latestRevisionNumber: 17,
+  createdByAgentId: null,
+  createdByUserId: "user-board",
+  updatedByAgentId: null,
+  updatedByUserId: "user-board",
+  createdAt: now,
+  updatedAt: now,
+};
+
+const routineAnnotationThreads: DocumentAnnotationThreadWithComments[] = [
+  {
+    id: "routine-thread-1",
+    companyId: COMPANY_ID,
+    issueId: null,
+    routineId: ROUTINE_ID,
+    documentId: routineDescriptionDocument.id,
+    documentKey: "description",
+    status: "open",
+    anchorState: "active",
+    anchorConfidence: "exact",
+    originalRevisionId: routineDescriptionDocument.latestRevisionId,
+    originalRevisionNumber: routineDescriptionDocument.latestRevisionNumber,
+    currentRevisionId: routineDescriptionDocument.latestRevisionId,
+    currentRevisionNumber: routineDescriptionDocument.latestRevisionNumber,
+    selectedText: "Keep it to five bullets",
+    prefixText: "by {{deadline}}.\n\n",
+    suffixText: ".",
+    normalizedStart: 84,
+    normalizedEnd: 108,
+    markdownStart: 84,
+    markdownEnd: 108,
+    anchorSelector: {
+      quote: {
+        exact: "Keep it to five bullets",
+        prefix: "by {{deadline}}.\n\n",
+        suffix: ".",
+      },
+      position: { normalizedStart: 84, normalizedEnd: 108, markdownStart: 84, markdownEnd: 108 },
+    },
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    resolvedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    comments: [
+      {
+        id: "routine-comment-1",
+        companyId: COMPANY_ID,
+        threadId: "routine-thread-1",
+        issueId: null,
+        routineId: ROUTINE_ID,
+        documentId: routineDescriptionDocument.id,
+        body: "The digest constraint is visible here; the panel stays aligned with the routine overview editor.",
+        authorType: "user",
+        authorAgentId: null,
+        authorUserId: "user-board",
+        createdByRunId: null,
+        issueCommentId: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  },
+];
+
 const routineRuns = [
-  { id: "run-1", source: "manual", status: "succeeded", triggeredAt: new Date("2026-06-09T11:48:00Z"), trigger: { label: "manual", kind: "manual" }, linkedIssue: { id: "issue-1", identifier: "PAP-99221" } },
-  { id: "run-2", source: "schedule", status: "failed", triggeredAt: new Date("2026-06-08T14:00:00Z"), trigger: { label: "schedule", kind: "schedule" }, linkedIssue: { id: "issue-2", identifier: "PAP-99220" } },
-  { id: "run-3", source: "schedule", status: "succeeded", triggeredAt: new Date("2026-06-07T14:00:00Z"), trigger: { label: "schedule", kind: "schedule" }, linkedIssue: { id: "issue-3", identifier: "PAP-99219" } },
+  { id: "run-1", source: "manual", status: "succeeded", triggeredAt: new Date("2026-06-09T11:48:00Z"), failureReason: null, triggerPayload: { customer_name: "Acme", deadline: "Fri" }, trigger: { label: "manual", kind: "manual" }, linkedIssue: { id: "issue-1", identifier: "PAP-99221", title: "Weekly digest for Acme" } },
+  { id: "run-2", source: "schedule", status: "failed", triggeredAt: new Date("2026-06-08T14:00:00Z"), failureReason: "Cron timed out after 600s", triggerPayload: { customer_name: "Acme" }, trigger: { label: "schedule", kind: "schedule" }, linkedIssue: { id: "issue-2", identifier: "PAP-99220", title: "Weekly digest for Acme" } },
+  { id: "run-3", source: "schedule", status: "succeeded", triggeredAt: new Date("2026-06-07T14:00:00Z"), failureReason: null, triggerPayload: { customer_name: "Globex" }, trigger: { label: "schedule", kind: "schedule" }, linkedIssue: { id: "issue-3", identifier: "PAP-99219", title: "Weekly digest for Globex" } },
+] as never;
+
+function stubSecret(id: string, name: string, latestVersion: number, referenceCount: number) {
+  return {
+    id,
+    companyId: COMPANY_ID,
+    key: name.toLowerCase(),
+    name,
+    provider: "paperclip",
+    status: "active",
+    managedMode: "managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion,
+    description: null,
+    lastResolvedAt: now,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    referenceCount,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const availableSecrets = [
+  stubSecret("secret-prod-db", "prod-db", 3, 5),
+  stubSecret("secret-gh-token", "gh-token", 2, 4),
+  stubSecret("secret-openai", "openai-key", 1, 2),
+  stubSecret("secret-stripe", "stripe-key", 1, 1),
 ] as never;
 
 const activity = [
@@ -124,17 +237,21 @@ function stubMutation(overrides?: Record<string, unknown>) {
   } as never;
 }
 
-function makeContext(dirty: boolean, navigate: (s: RoutineSectionKey) => void): RoutineDetailContextValue {
+function makeContext(
+  dirty: boolean,
+  navigate: (s: RoutineSectionKey) => void,
+  routineDetail: RoutineDetailType = routine,
+): RoutineDetailContextValue {
   const defaults: RoutineEditDraft = {
-    title: routine.title,
-    description: routine.description ?? "",
-    projectId: routine.projectId ?? "",
-    assigneeAgentId: routine.assigneeAgentId ?? "",
-    priority: routine.priority,
-    concurrencyPolicy: routine.concurrencyPolicy,
-    catchUpPolicy: routine.catchUpPolicy,
-    variables: routine.variables,
-    env: routine.env ?? null,
+    title: routineDetail.title,
+    description: routineDetail.description ?? "",
+    projectId: routineDetail.projectId ?? "",
+    assigneeAgentId: routineDetail.assigneeAgentId ?? "",
+    priority: routineDetail.priority,
+    concurrencyPolicy: routineDetail.concurrencyPolicy,
+    catchUpPolicy: routineDetail.catchUpPolicy,
+    variables: routineDetail.variables,
+    env: routineDetail.env ?? null,
   };
   const editDraft: RoutineEditDraft = dirty
     ? { ...defaults, description: `${defaults.description}\n\nAlways CC the account owner.` }
@@ -142,7 +259,7 @@ function makeContext(dirty: boolean, navigate: (s: RoutineSectionKey) => void): 
   const dirtyFields = dirty ? [{ key: "description", label: "the description" }] : [];
 
   return {
-    routine,
+    routine: routineDetail,
     routineId: ROUTINE_ID,
     companyId: COMPANY_ID,
     editDraft,
@@ -172,7 +289,7 @@ function makeContext(dirty: boolean, navigate: (s: RoutineSectionKey) => void): 
     secretMessage: null,
     setSecretMessage: () => {},
     copySecretValue: () => {},
-    availableSecrets: [],
+    availableSecrets,
     createSecret: stubMutation(),
     agents: storybookAgents,
     projects: storybookProjects,
@@ -210,10 +327,16 @@ const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   history: "History",
 };
 
-function SectionBody({ section }: { section: RoutineSectionKey }) {
+function SectionBody({
+  section,
+  descriptionAnnotationsInitiallyOpen = false,
+}: {
+  section: RoutineSectionKey;
+  descriptionAnnotationsInitiallyOpen?: boolean;
+}) {
   switch (section) {
     case "overview":
-      return <OverviewSection />;
+      return <OverviewSection defaultDescriptionAnnotationsOpen={descriptionAnnotationsInitiallyOpen} />;
     case "triggers":
       return <TriggersSection />;
     case "variables":
@@ -231,15 +354,37 @@ function SectionBody({ section }: { section: RoutineSectionKey }) {
   }
 }
 
-function RoutineCShell({ initialSection = "overview", dirty = false }: { initialSection?: RoutineSectionKey; dirty?: boolean }) {
+function RoutineCShell({
+  initialSection = "overview",
+  dirty = false,
+  withDescriptionAnnotations = false,
+}: {
+  initialSection?: RoutineSectionKey;
+  dirty?: boolean;
+  withDescriptionAnnotations?: boolean;
+}) {
   const [section, setSection] = useState<RoutineSectionKey>(initialSection);
-  const ctx = useMemo(() => makeContext(dirty, setSection), [dirty]);
+  const queryClient = useQueryClient();
+  const routineDetail = useMemo(
+    () => withDescriptionAnnotations
+      ? { ...routine, descriptionDocument: routineDescriptionDocument }
+      : routine,
+    [withDescriptionAnnotations],
+  );
+  useEffect(() => {
+    if (!withDescriptionAnnotations) return;
+    queryClient.setQueryData(
+      queryKeys.routines.documentAnnotations(ROUTINE_ID, "description", "all"),
+      routineAnnotationThreads,
+    );
+  }, [queryClient, withDescriptionAnnotations]);
+  const ctx = useMemo(() => makeContext(dirty, setSection, routineDetail), [dirty, routineDetail]);
   const isEditable = EDITABLE_SECTIONS.includes(section);
 
   return (
     <RoutineDetailContext.Provider value={ctx}>
-      <div className="flex h-[900px] flex-col bg-background text-foreground">
-        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
+      <div className="flex h-[900px] flex-col overflow-y-auto bg-background text-foreground">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="truncate text-base font-semibold">{routine.title}</span>
             <Badge variant="outline" className="hidden shrink-0 gap-1.5 text-xs text-muted-foreground sm:inline-flex">
@@ -265,10 +410,13 @@ function RoutineCShell({ initialSection = "overview", dirty = false }: { initial
             hasLiveRun={false}
             onNavigate={setSection}
           />
-          <main className="min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-8">
+          <main className="min-w-0 flex-1 px-4 pb-6 pt-10 md:px-8">
             <section className={isEditable ? "mx-auto w-full max-w-3xl" : "w-full"}>
               <h2 className="mb-4 text-lg font-semibold">{SECTION_TITLES[section]}</h2>
-              <SectionBody section={section} />
+              <SectionBody
+                section={section}
+                descriptionAnnotationsInitiallyOpen={withDescriptionAnnotations}
+              />
               {isEditable ? (
                 <RoutineSaveBar
                   dirtyFields={ctx.sectionDirtyFields(section)}
@@ -301,6 +449,9 @@ export default meta;
 type Story = StoryObj<typeof RoutineCShell>;
 
 export const Overview: Story = { args: { initialSection: "overview", dirty: true } };
+export const OverviewDescriptionAnnotations: Story = {
+  args: { initialSection: "overview", withDescriptionAnnotations: true },
+};
 export const Triggers: Story = { args: { initialSection: "triggers" } };
 export const Variables: Story = { args: { initialSection: "variables" } };
 export const Secrets: Story = { args: { initialSection: "secrets" } };
