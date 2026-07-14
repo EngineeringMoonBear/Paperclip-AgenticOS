@@ -16,6 +16,10 @@
  *   - native addons — resolved from node_modules at runtime if present
  */
 
+// Only packages esbuild cannot bundle stay external. Unlike the upstream
+// config (v2026.707.0), we do NOT externalize third-party npm deps (zod,
+// drizzle-orm, commander, …) — they must be bundled so the CLI runs in the
+// pnpm-symlinked Docker image without ERR_MODULE_NOT_FOUND (see header note).
 const EXTERNAL = [
   "@paperclipai/server",
   "embedded-postgres",

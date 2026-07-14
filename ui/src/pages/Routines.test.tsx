@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, type AnchorHTMLAttributes, type ReactNode } from "react";
+import type { AnchorHTMLAttributes, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
@@ -8,6 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
 
 let currentSearch = "";
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
@@ -244,6 +253,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     projectId: "project-1",
     goalId: null,
     parentIssueId: null,
+    responsibleUserId: null,
     title: "Routine title",
     description: null,
     assigneeAgentId: "agent-1",
@@ -284,6 +294,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1000,
