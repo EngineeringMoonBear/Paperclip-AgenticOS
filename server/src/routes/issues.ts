@@ -108,7 +108,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import { isIssueIdempotentReplay, readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -4185,9 +4185,11 @@ export function issueRoutes(
       companyId,
       req.body.assigneeAgentId as string | null | undefined,
     );
+    const { idempotencyKey, ...requestBody } = req.body;
     const createBody = {
-      ...req.body,
+      ...requestBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(idempotencyKey ? { originFingerprint: idempotencyKey } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -4225,57 +4227,18 @@ export function issueRoutes(
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
-    await issueReferencesSvc.syncIssue(issue.id);
-    const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      issueReferencesSvc.emptySummary(),
-      referenceSummary,
-    );
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        title: issue.title,
-        identifier: issue.identifier,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
+    if (isIssueIdempotentReplay(issue)) {
+      const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      res.status(200).json({
+        ...issue,
+        relatedWork: referenceSummary,
+        referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
+      return;
     }
+
+    const activityStatusDetails = buildCreateIssueActivityStatusDetails(issue, res);
 
     void queueIssueAssignmentWakeup({
       heartbeat,
@@ -4287,11 +4250,75 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    // Respond as soon as the row is durable; reference sync and activity
+    // logging run after the response so slow post-insert work can't hold the
+    // request open past client timeouts.
     res.status(201).json({
       ...issue,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      relatedWork: issueReferencesSvc.emptySummary(),
+      referencedIssueIdentifiers: [],
     });
+
+    void deferredCreatePostProcessing();
+    return;
+
+    async function deferredCreatePostProcessing(): Promise<void> {
+      try {
+        await issueReferencesSvc.syncIssue(issue.id);
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+        const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+          issueReferencesSvc.emptySummary(),
+          referenceSummary,
+        );
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            title: issue.title,
+            identifier: issue.identifier,
+            ...activityStatusDetails,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...summarizeIssueReferenceActivityDetails({
+              addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+              removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+              currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+            }),
+          },
+        });
+
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "Deferred issue create post-processing failed");
+      }
+    }
   });
 
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
@@ -4309,9 +4336,11 @@ export function issueRoutes(
       parent.companyId,
       req.body.assigneeAgentId as string | null | undefined,
     );
+    const { idempotencyKey, ...requestBody } = req.body;
     const createBody = {
-      ...req.body,
+      ...requestBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(idempotencyKey ? { originFingerprint: idempotencyKey } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -4347,6 +4376,11 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    if (isIssueIdempotentReplay(issue)) {
+      res.status(200).json(issue);
+      return;
+    }
 
     await logActivity(db, {
       companyId: parent.companyId,

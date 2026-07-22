@@ -346,6 +346,41 @@ type AcceptedPlanDecompositionInput = {
   actorUserId?: string | null;
   actorRunId?: string | null;
 };
+
+const MANUAL_ISSUE_DEFAULT_FINGERPRINT = "default";
+const MANUAL_ISSUE_IDEMPOTENCY_CONSTRAINT = "issues_active_agent_create_idempotency_uq";
+const MANUAL_ISSUE_IDEMPOTENCY_TERMINAL_STATUSES = ["done", "cancelled"];
+const ISSUE_IDEMPOTENT_REPLAY = Symbol.for("paperclip.issue.idempotentReplay");
+
+export function deriveManualIssueIdempotencyFingerprint(input: {
+  parentId?: string | null;
+  title: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+}): string {
+  const normalizedTitle = input.title.trim().toLowerCase().replace(/\s+/g, " ");
+  const assignee = input.assigneeAgentId ?? input.assigneeUserId ?? "";
+  return createHash("sha256")
+    .update(`${input.parentId ?? ""}|${normalizedTitle}|${assignee}`)
+    .digest("hex");
+}
+
+export function isIssueIdempotentReplay(issue: object | null | undefined): boolean {
+  return Boolean(issue && (issue as Record<symbol, unknown>)[ISSUE_IDEMPOTENT_REPLAY]);
+}
+
+function markIssueIdempotentReplay<T extends object>(issue: T): T {
+  Object.defineProperty(issue, ISSUE_IDEMPOTENT_REPLAY, { value: true, enumerable: false });
+  return issue;
+}
+
+function isManualIssueIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+  const constraint = err.constraint ?? err.constraint_name;
+  if (err.code === "23505" && constraint === MANUAL_ISSUE_IDEMPOTENCY_CONSTRAINT) return true;
+  return isManualIssueIdempotencyConflict(err.cause);
+}
 type AcceptedPlanDocumentInteraction = {
   id: string;
 };
@@ -4719,7 +4754,49 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      // Manual creates carry a deterministic fingerprint so a client retry
+      // after a timed-out response resolves to the already-committed row
+      // instead of inserting a duplicate.
+      if (
+        (issueData.originKind ?? "manual") === "manual" &&
+        (issueData.originFingerprint == null || issueData.originFingerprint === MANUAL_ISSUE_DEFAULT_FINGERPRINT)
+      ) {
+        issueData.originFingerprint = deriveManualIssueIdempotencyFingerprint({
+          parentId: issueData.parentId,
+          title: issueData.title,
+          assigneeAgentId: issueData.assigneeAgentId,
+          assigneeUserId: issueData.assigneeUserId,
+        });
+      }
+      const idempotencyFingerprint =
+        (issueData.originKind ?? "manual") === "manual" &&
+        typeof issueData.originFingerprint === "string" &&
+        issueData.originFingerprint !== MANUAL_ISSUE_DEFAULT_FINGERPRINT
+          ? issueData.originFingerprint
+          : null;
+      const findActiveIdempotentIssue = async () => {
+        if (!idempotencyFingerprint) return null;
+        const existing = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, "manual"),
+              eq(issues.originFingerprint, idempotencyFingerprint),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, MANUAL_ISSUE_IDEMPOTENCY_TERMINAL_STATUSES),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        const [enriched] = await withIssueLabels(db, [existing]);
+        return markIssueIdempotentReplay(enriched);
+      };
+      const replay = await findActiveIdempotentIssue();
+      if (replay) return replay;
+      const runCreateTransaction = () => db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -4933,6 +5010,17 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+      try {
+        return await runCreateTransaction();
+      } catch (error) {
+        // A concurrent duplicate can commit between the replay pre-check and
+        // this insert; resolve the unique-index conflict to the winner row.
+        if (isManualIssueIdempotencyConflict(error)) {
+          const raced = await findActiveIdempotentIssue();
+          if (raced) return raced;
+        }
+        throw error;
+      }
     },
 
     update: async (
