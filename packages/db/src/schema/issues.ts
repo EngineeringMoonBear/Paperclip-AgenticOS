@@ -119,6 +119,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activeAgentCreateIdempotencyIdx: uniqueIndex("issues_active_agent_create_idempotency_uq")
+      .on(table.companyId, table.originFingerprint)
+      .where(
+        sql`${table.originKind} = 'manual'
+          and ${table.originFingerprint} <> 'default'
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
     activeStaleRunEvaluationIdx: uniqueIndex("issues_active_stale_run_evaluation_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

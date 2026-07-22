@@ -150,6 +150,12 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
+
+// Resolved via the global symbol registry rather than an import so tests that
+// mock ../services/issues.js with a partial module don't break this route.
+const ISSUE_IDEMPOTENT_REPLAY = Symbol.for("paperclip.issue.idempotentReplay");
+const isIssueIdempotentReplay = (issue: object | null | undefined): boolean =>
+  Boolean(issue && (issue as Record<symbol, unknown>)[ISSUE_IDEMPOTENT_REPLAY]);
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -6265,7 +6271,7 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+    const { watchdogDiscovery: rawWatchdogDiscovery, idempotencyKey, ...rawCreateBody } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -6311,6 +6317,7 @@ export function issueRoutes(
       ...rawCreateBody,
       parentId: effectiveParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(idempotencyKey ? { originFingerprint: idempotencyKey } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
@@ -6380,89 +6387,18 @@ export function issueRoutes(
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
     });
-    await issueReferencesSvc.syncIssue(issue.id);
-    await externalObjectsSvc.syncIssueSafely(issue.id);
-    const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      issueReferencesSvc.emptySummary(),
-      referenceSummary,
-    );
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        title: issue.title,
-        identifier: issue.identifier,
-        ...(watchdogProductBugFollowUp
-          ? {
-            watchdogDiscovery: {
-              kind: watchdogProductBugFollowUp.discovery.kind,
-              sourceIssueId: watchdogProductBugFollowUp.sourceIssue.id,
-              sourceIssueIdentifier: watchdogProductBugFollowUp.sourceIssue.identifier,
-              watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
-              watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
-              stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
-            },
-          }
-          : {}),
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
+    if (isIssueIdempotentReplay(issue)) {
+      const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      res.status(200).json({
+        ...issue,
+        relatedWork: referenceSummary,
+        referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
+      return;
     }
 
-    if (issue.watchdog) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.watchdog_created",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          watchdogId: issue.watchdog.id,
-          watchdogAgentId: issue.watchdog.watchdogAgentId,
-          source: "issue.create",
-        },
-      });
-    }
+    const activityStatusDetails = buildCreateIssueActivityStatusDetails(issue, res);
 
     void queueIssueAssignmentWakeup({
       heartbeat,
@@ -6475,11 +6411,107 @@ export function issueRoutes(
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
+    // Respond as soon as the row is durable; reference/external-object sync
+    // and activity logging run after the response so slow post-insert work
+    // can't hold the request open past client timeouts.
     res.status(201).json({
       ...issue,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      relatedWork: issueReferencesSvc.emptySummary(),
+      referencedIssueIdentifiers: [],
     });
+
+    void deferredCreatePostProcessing();
+    return;
+
+    async function deferredCreatePostProcessing(): Promise<void> {
+      try {
+        await issueReferencesSvc.syncIssue(issue.id);
+        await externalObjectsSvc.syncIssueSafely(issue.id);
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+        const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+          issueReferencesSvc.emptySummary(),
+          referenceSummary,
+        );
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            title: issue.title,
+            identifier: issue.identifier,
+            ...(watchdogProductBugFollowUp
+              ? {
+                watchdogDiscovery: {
+                  kind: watchdogProductBugFollowUp.discovery.kind,
+                  sourceIssueId: watchdogProductBugFollowUp.sourceIssue.id,
+                  sourceIssueIdentifier: watchdogProductBugFollowUp.sourceIssue.identifier,
+                  watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
+                  watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
+                  stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+                },
+              }
+              : {}),
+            ...activityStatusDetails,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...summarizeIssueReferenceActivityDetails({
+              addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+              removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+              currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+            }),
+          },
+        });
+
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+
+        if (issue.watchdog) {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.watchdog_created",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              watchdogId: issue.watchdog.id,
+              watchdogAgentId: issue.watchdog.watchdogAgentId,
+              source: "issue.create",
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "Deferred issue create post-processing failed");
+      }
+    }
   });
 
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
@@ -6503,9 +6535,11 @@ export function issueRoutes(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
     );
+    const { idempotencyKey, ...childRequestBody } = sanitizedBody;
     const createBody = {
-      ...sanitizedBody,
+      ...childRequestBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(idempotencyKey ? { originFingerprint: idempotencyKey } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
@@ -6558,6 +6592,12 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
     });
+
+    if (isIssueIdempotentReplay(issue)) {
+      res.status(200).json(issue);
+      return;
+    }
+
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {
